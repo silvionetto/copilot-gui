@@ -4,23 +4,31 @@ import com.github.copilot.CopilotClient;
 import com.github.copilot.generated.AssistantMessageEvent;
 import com.github.copilot.rpc.CopilotClientOptions;
 import com.github.copilot.rpc.MessageOptions;
+import com.github.copilot.rpc.ModelInfo;
 import com.github.copilot.rpc.PermissionHandler;
 import com.github.copilot.rpc.SessionConfig;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class CopilotChatService {
+
+    private volatile String selectedModel;
 
     public String send(String prompt) {
         var options = new CopilotClientOptions().setCliPath(resolveCliPath());
         try (var client = new CopilotClient(options)) {
             client.start().get();
 
-            try (var session = client.createSession(
-                    new SessionConfig().setOnPermissionRequest(PermissionHandler.APPROVE_ALL)).get()) {
+            var sessionConfig = new SessionConfig().setOnPermissionRequest(PermissionHandler.APPROVE_ALL);
+            if (selectedModel != null && !selectedModel.isBlank()) {
+                sessionConfig.setModel(selectedModel);
+            }
+
+            try (var session = client.createSession(sessionConfig).get()) {
                 var response = new AtomicReference<String>();
                 session.on(AssistantMessageEvent.class, message -> response.set(message.getData().content()));
                 session.sendAndWait(new MessageOptions().setPrompt(prompt)).get();
@@ -37,6 +45,39 @@ public final class CopilotChatService {
         } catch (ExecutionException exception) {
             throw new IllegalStateException("Copilot could not complete the request.", exception.getCause());
         }
+    }
+
+    /**
+     * Fetches the models available to the authenticated Copilot account,
+     * mirroring the CLI's {@code /model} slash command.
+     */
+    public List<ModelInfo> listModels() {
+        var options = new CopilotClientOptions().setCliPath(resolveCliPath());
+        try (var client = new CopilotClient(options)) {
+            client.start().get();
+            return client.listModels().get();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("The model list request was interrupted.", exception);
+        } catch (ExecutionException exception) {
+            throw new IllegalStateException("Copilot could not list available models.", exception.getCause());
+        }
+    }
+
+    /**
+     * Returns the model id used for subsequent requests, or {@code null} if
+     * the CLI's default model applies.
+     */
+    public String getSelectedModel() {
+        return selectedModel;
+    }
+
+    /**
+     * Sets the model id to use for subsequent requests. Pass {@code null} or
+     * blank to fall back to the CLI's default model.
+     */
+    public void setSelectedModel(String selectedModel) {
+        this.selectedModel = (selectedModel == null || selectedModel.isBlank()) ? null : selectedModel;
     }
 
     /**
